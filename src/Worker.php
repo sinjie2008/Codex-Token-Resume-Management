@@ -65,7 +65,7 @@ final class Worker
         $lookbackMs = $this->config->int('SCAN_LOOKBACK_HOURS', 1) * 3600 * 1000;
         $threads = $this->localStore->listRecentThreads(
             (int) floor(microtime(true) * 1000) - $lookbackMs,
-            $this->repository->managedSessionIds(),
+            [],
         );
         $latestUsage = null;
 
@@ -176,6 +176,9 @@ final class Worker
 
         if ($latestUsage !== null && is_array($latestUsage['usage'])) {
             $this->repository->recordUsage($latestUsage['usage'], $latestUsage['timestamp']);
+            if (($latestUsage['limit_reached'] ?? false) === false) {
+                $this->repository->markAccountReady(true);
+            }
         }
         $this->repository->setSetting('last_codex_scan_at', Util::dbTime(Util::utcNow()) ?? '');
     }
@@ -266,6 +269,7 @@ final class Worker
         }
 
         if ($outcome['kind'] === 'rate_limited') {
+            $this->repository->setAccountRateLimit($outcome['reset_at'], $outcome['reason']);
             $this->repository->rateLimitRetry((int) $session['id'], $lock, $outcome['reset_at']);
             $this->repository->log($session['session_id'], 'RATE_LIMIT_RETRY', 'Codex remains limited; local backoff scheduled.');
             return;

@@ -16,10 +16,19 @@ const formatDate = (value) => value
 const countdown = (value) => {
   if (!value) return 'No verified reset';
   const seconds = Math.max(0, Math.floor((new Date(value).getTime() - Date.now()) / 1000));
+  const days = Math.floor(seconds / 86400);
+  if (days > 0) return `${days}d ${Math.floor((seconds % 86400) / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
   const remainder = seconds % 60;
   return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}`;
+};
+
+// Codex may expose the 5-hour and weekly windows under either primary or
+// secondary. The window_minutes field is authoritative for their meaning.
+const usageWindow = (usage, minutes) => {
+  const windows = [usage?.primary, usage?.secondary].filter(Boolean);
+  return windows.find((window) => Number(window.window_minutes) === minutes) || null;
 };
 
 const showNotice = (message, error = false) => {
@@ -102,19 +111,26 @@ const renderSnapshot = (snapshot) => {
     : 'No scan yet';
 
   const usage = snapshot.usage;
-  document.querySelector('#primary-usage').textContent = usage?.primary?.used_percent != null
-    ? `${usage.primary.used_percent}%`
+  const fiveHour = usageWindow(usage, 300);
+  const weekly = usageWindow(usage, 10080);
+  document.querySelector('#primary-usage').textContent = fiveHour?.used_percent != null
+    ? `${Math.max(0, 100 - fiveHour.used_percent)}% remaining`
     : 'Unavailable';
-  document.querySelector('#secondary-usage').textContent = usage?.secondary?.used_percent != null
-    ? `${usage.secondary.used_percent}%`
+  document.querySelector('#secondary-usage').textContent = weekly?.used_percent != null
+    ? `${Math.max(0, 100 - weekly.used_percent)}% remaining`
     : 'Unavailable';
-  document.querySelector('#primary-reset').textContent = usage?.primary?.resets_at
-    ? `Reset ${formatDate(new Date(usage.primary.resets_at * 1000).toISOString())}`
+  document.querySelector('#primary-reset').textContent = fiveHour?.resets_at
+    ? `Reset ${formatDate(new Date(fiveHour.resets_at * 1000).toISOString())}`
     : 'No verified reset';
-  document.querySelector('#secondary-reset').textContent = usage?.secondary?.resets_at
-    ? `Reset ${formatDate(new Date(usage.secondary.resets_at * 1000).toISOString())}`
+  document.querySelector('#secondary-reset').textContent = weekly?.resets_at
+    ? `Reset ${formatDate(new Date(weekly.resets_at * 1000).toISOString())}`
     : 'No verified reset';
-  document.querySelector('#limit-state').textContent = usage?.rate_limit_reached_type
+  const locallyLimited = [fiveHour, weekly].some((window) => Number(window?.used_percent) >= 100);
+  document.querySelector('#limit-state').textContent = snapshot.codex.rate_limit_status === 'STALE'
+    ? 'STALE — refreshing'
+    : snapshot.codex.rate_limit_status === 'BLOCKED' || locallyLimited
+    ? `BLOCKED until ${formatDate(snapshot.codex.account_blocked_until)}`
+    : usage?.rate_limit_reached_type
     ? `LIMITED: ${usage.rate_limit_reached_type}`
     : usage ? 'READY' : 'Unknown';
   document.querySelector('#usage-updated').textContent = usage?.updated_at

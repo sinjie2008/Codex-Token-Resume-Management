@@ -91,6 +91,44 @@ final class SessionRepository
         return $usage;
     }
 
+    public function accountBlockedUntil(): ?int
+    {
+        $value = $this->getSetting('account_blocked_until');
+        if ($value === null || trim($value) === '') return null;
+        $timestamp = strtotime($value . ' UTC');
+        return $timestamp === false ? null : $timestamp;
+    }
+
+    public function setAccountRateLimit(?int $resetTimestamp, string $rawMessage = ''): void
+    {
+        if ($resetTimestamp === null) return;
+        $this->setSetting('account_blocked_until', Util::dbTime($resetTimestamp) ?? '');
+        $this->setSetting('rate_limit_status', 'BLOCKED');
+        $this->setSetting('rate_limit_source', 'codex_resume');
+        if ($rawMessage !== '') $this->setSetting('raw_rate_limit_message', Util::truncate($rawMessage, 8000));
+        $blocked = Util::dbTime($resetTimestamp);
+        $statement = $this->pdo->prepare(
+            'UPDATE codex_sessions SET status = IF(auto_resume = 1, "WAITING_FOR_RESET", status),
+                next_retry_at = IF(auto_resume = 1, :blocked, next_retry_at), reset_at = IF(auto_resume = 1, :blocked, reset_at),
+                resume_lock = NULL, resume_lock_at = NULL
+             WHERE auto_resume = 1 AND status <> "RESUMING"'
+        );
+        $statement->execute(['blocked' => $blocked]);
+    }
+
+    public function markAccountReady(bool $authoritative = false): void
+    {
+        $blocked = $this->accountBlockedUntil();
+        if ($blocked !== null && $blocked > time() && !$authoritative) return;
+        if ($blocked !== null) {
+            $this->setSetting('account_blocked_until', '');
+            $this->setSetting('rate_limit_status', 'READY');
+            $this->pdo->exec('UPDATE codex_sessions SET status = IF(status = "WAITING_FOR_RESET", "RETRY_WAIT", status),
+                next_retry_at = IF(status = "WAITING_FOR_RESET", COALESCE(active_writer_retry_at, CURRENT_TIMESTAMP(6)), next_retry_at),
+                reset_at = IF(status = "WAITING_FOR_RESET", NULL, reset_at) WHERE auto_resume = 1');
+        }
+    }
+
     public function managedSessionIds(): array
     {
         return $this->pdo->query('SELECT session_id FROM codex_sessions')->fetchAll(PDO::FETCH_COLUMN);
@@ -327,6 +365,8 @@ final class SessionRepository
                AND status IN ("WAITING_FOR_RESET", "RETRY_WAIT", "ACTIVE_ELSEWHERE")
                AND COALESCE(next_retry_at, reset_at) IS NOT NULL
                AND COALESCE(next_retry_at, reset_at) <= CURRENT_TIMESTAMP(6)
+               AND (NULLIF((SELECT setting_value FROM app_settings WHERE setting_key = "account_blocked_until"), "") IS NULL
+                    OR (SELECT setting_value FROM app_settings WHERE setting_key = "account_blocked_until") <= UTC_TIMESTAMP(6))
                AND resume_lock IS NULL
                AND (last_resume_attempt_at IS NULL OR last_resume_attempt_at <= DATE_SUB(CURRENT_TIMESTAMP(6), INTERVAL :cooldown SECOND))
              ORDER BY COALESCE(next_retry_at, reset_at), id LIMIT 1'
@@ -407,6 +447,7 @@ final class SessionRepository
             'reset_at' => $resetTimestamp !== null ? Util::dbTime($resetTimestamp) : null,
             'next_retry_at' => $nextRetry,
         ]);
+        $this->setAccountRateLimit($resetTimestamp);
     }
 
     public function genericRetry(int $id, string $token, string $reason): void

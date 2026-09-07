@@ -23,6 +23,10 @@ try {
         $heartbeatUnix = $heartbeat !== null ? strtotime($heartbeat . ' UTC') : false;
         $workerOnline = $heartbeatUnix !== false
             && time() - $heartbeatUnix <= $config->int('WORKER_STALE_SECONDS', 1);
+        $usageUpdatedAt = $repository->getSetting('usage_updated_at');
+        $usageUpdatedUnix = $usageUpdatedAt !== null ? strtotime($usageUpdatedAt . ' UTC') : false;
+        $usageFresh = $usageUpdatedUnix !== false
+            && time() - $usageUpdatedUnix <= $config->int('USAGE_STALE_SECONDS', 120);
         Http::json([
             'ok' => true,
             'worker' => [
@@ -33,6 +37,9 @@ try {
             ],
             'codex' => [
                 'storage_status' => $repository->getSetting('codex_storage_status') ?? 'UNKNOWN',
+                'rate_limit_status' => !$usageFresh ? 'STALE' : ($repository->getSetting('rate_limit_status') ?? (($repository->accountBlockedUntil() ?? 0) > time() ? 'BLOCKED' : 'READY')),
+                'usage_fresh' => $usageFresh,
+                'account_blocked_until' => Util::isoFromDb($repository->getSetting('account_blocked_until')),
                 'last_scan_at' => Util::isoFromDb($repository->getSetting('last_codex_scan_at')),
                 'version' => $repository->getSetting('codex_version'),
             ],
