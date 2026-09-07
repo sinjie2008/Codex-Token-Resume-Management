@@ -1,0 +1,8 @@
+Options -Indexes
+
+<FilesMatch "^(?:\.env|\.env\..*|worker\.php|AGENTS\.md|MEMORY\.md|README\.md)$">
+    Require all denied
+</FilesMatch>
+
+RewriteEngine On
+RewriteRule ^(?:src|database|scripts|tests|var|\.codebase-memory)(?:/|$) - [F,L]
