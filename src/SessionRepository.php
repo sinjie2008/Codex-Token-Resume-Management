@@ -131,7 +131,7 @@ final class SessionRepository
 
     public function managedSessionIds(): array
     {
-        return $this->pdo->query('SELECT session_id FROM codex_sessions')->fetchAll(PDO::FETCH_COLUMN);
+        return $this->pdo->query('SELECT session_id FROM codex_sessions WHERE status <> "FILTERED_INTERNAL"')->fetchAll(PDO::FETCH_COLUMN);
     }
 
     public function findById(int $id): ?array
@@ -155,7 +155,7 @@ final class SessionRepository
     public function listSessions(): array
     {
         return $this->pdo->query(
-            'SELECT * FROM codex_sessions
+            'SELECT * FROM codex_sessions WHERE status <> "FILTERED_INTERNAL"
              ORDER BY FIELD(status, "RESUMING", "WAITING_FOR_RESET", "RETRY_WAIT", "ACTIVE_ELSEWHERE", "WATCHING", "RESUMED_EXTERNALLY", "COMPLETED", "CANCELLED", "ERROR"),
                       COALESCE(next_retry_at, reset_at, updated_at), id'
         )->fetchAll();
@@ -256,8 +256,11 @@ final class SessionRepository
     {
         $detectedAt = Util::dbTime($event['timestamp'] ?? Util::utcNow());
         $previous = $this->findBySessionId($thread['session_id']);
-        $isNewDetection = $previous === null
-            || $previous['limit_detected_at'] === null
+        if ($previous === null) {
+            return;
+        }
+
+        $isNewDetection = $previous['limit_detected_at'] === null
             || ($detectedAt !== null && $detectedAt > $previous['limit_detected_at']);
         $resetAt = isset($event['reset_at']) && is_int($event['reset_at']) ? Util::dbTime($event['reset_at']) : null;
         $nextRetryAt = $resetAt;
@@ -307,6 +310,19 @@ final class SessionRepository
             $this->log($thread['session_id'], 'LIMIT_DETECTED', $resetAt === null
                 ? 'Rate limit detected; safe fallback retry scheduled.'
                 : 'Rate limit detected; session queued until the reported reset time.');
+        }
+    }
+
+    public function filterInternalSession(string $sessionId): void
+    {
+        $statement = $this->pdo->prepare(
+            'UPDATE codex_sessions SET status = "FILTERED_INTERNAL", auto_resume = 0, next_retry_at = NULL,
+                resume_lock = NULL, resume_lock_at = NULL, last_error = "Filtered: Codex internal/subagent thread."
+             WHERE session_id = :session_id AND status <> "RESUMING"'
+        );
+        $statement->execute(['session_id' => strtolower($sessionId)]);
+        if ($statement->rowCount() === 1) {
+            $this->log($sessionId, 'INTERNAL_SESSION_FILTERED', 'Internal Codex child/subagent session removed from the active queue.');
         }
     }
 

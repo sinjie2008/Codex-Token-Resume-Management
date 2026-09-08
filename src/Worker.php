@@ -62,6 +62,11 @@ final class Worker
         }
 
         $this->repository->setSetting('codex_storage_status', 'READY');
+        foreach ($this->repository->managedSessionIds() as $sessionId) {
+            if ($this->localStore->classifyThread((string) $sessionId) === 'INTERNAL') {
+                $this->repository->filterInternalSession((string) $sessionId);
+            }
+        }
         $lookbackMs = $this->config->int('SCAN_LOOKBACK_HOURS', 1) * 3600 * 1000;
         $threads = $this->localStore->listRecentThreads(
             (int) floor(microtime(true) * 1000) - $lookbackMs,

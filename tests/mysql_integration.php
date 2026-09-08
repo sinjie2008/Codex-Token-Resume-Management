@@ -97,8 +97,19 @@ try {
         'reset_at' => time() + 60,
     ]);
     $session = $repository->findBySessionId($sessionId);
-    $assert($session['status'] === 'WAITING_FOR_RESET' && (int) $session['auto_resume'] === 1, 'A future limit event must automatically recreate and queue a deleted session.');
-    $assert($session['limit_turn_id'] === 'fixture-turn-after-delete' && $session['reset_at'] !== null, 'The recreated queue record must use the new limit event and reset time.');
+    $assert($session === null, 'A storage scan limit event must not enroll an unmanaged session.');
+
+    $session = $repository->upsertManual([
+        'session_id' => $sessionId,
+        'codex_title' => 'Internal fixture',
+        'project_path' => 'C:\\fixture',
+        'rollout_path' => 'C:\\fixture\\rollout.jsonl',
+        'updated_at_ms' => (int) floor(microtime(true) * 1000),
+    ], null, null);
+    $repository->filterInternalSession($sessionId);
+    $session = $repository->findBySessionId($sessionId);
+    $assert($session['status'] === 'FILTERED_INTERNAL' && (int) $session['auto_resume'] === 0, 'A positively classified internal session must be quarantined.');
+    $assert(!in_array($sessionId, array_column($repository->listSessions(), 'session_id'), true), 'Filtered internal sessions must stay out of the dashboard queue.');
     echo "PASS: $checks MySQL checks\n";
 } finally {
     $statement = $pdo->prepare('DELETE FROM activity_logs WHERE session_id = :session_id');

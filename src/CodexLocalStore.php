@@ -55,14 +55,35 @@ final class CodexLocalStore
 
         $db = $this->open();
         $statement = $db->prepare(
-            'SELECT id, rollout_path, cwd, substr(title, 1, 1000) AS title, name, updated_at_ms, created_at_ms, archived
+            'SELECT id, rollout_path, cwd, substr(title, 1, 1000) AS title, name, updated_at_ms, created_at_ms,
+                    archived, source, thread_source, agent_nickname, agent_role, agent_path
              FROM threads WHERE id = :id LIMIT 1'
         );
         $statement->bindValue(':id', strtolower($sessionId), SQLITE3_TEXT);
         $row = $statement->execute()->fetchArray(SQLITE3_ASSOC);
         $db->close();
 
-        return is_array($row) ? $this->normalizeThread($row) : null;
+        return is_array($row) && $this->classifyRow($row) === 'USER'
+            ? $this->normalizeThread($row)
+            : null;
+    }
+
+    public function classifyThread(string $sessionId): string
+    {
+        if (!Util::isSessionId($sessionId)) {
+            return 'MISSING';
+        }
+
+        $db = $this->open();
+        $statement = $db->prepare(
+            'SELECT archived, source, thread_source, agent_nickname, agent_role, agent_path
+             FROM threads WHERE id = :id LIMIT 1'
+        );
+        $statement->bindValue(':id', strtolower($sessionId), SQLITE3_TEXT);
+        $row = $statement->execute()->fetchArray(SQLITE3_ASSOC);
+        $db->close();
+
+        return is_array($row) ? $this->classifyRow($row) : 'MISSING';
     }
 
     public function listRecentThreads(int $updatedSinceMs, array $includeSessionIds = []): array
@@ -72,7 +93,7 @@ final class CodexLocalStore
             static fn (string $id): bool => Util::isSessionId($id),
         ));
 
-        $where = 'archived = 0 AND (updated_at_ms >= :updated_since';
+        $where = 'archived = 0 AND thread_source = "user" AND (updated_at_ms >= :updated_since';
         foreach ($includeSessionIds as $index => $_) {
             $where .= ' OR id = :include_' . $index;
         }
@@ -80,7 +101,8 @@ final class CodexLocalStore
 
         $db = $this->open();
         $statement = $db->prepare(
-            'SELECT id, rollout_path, cwd, substr(title, 1, 1000) AS title, name, updated_at_ms, created_at_ms, archived
+            'SELECT id, rollout_path, cwd, substr(title, 1, 1000) AS title, name, updated_at_ms, created_at_ms,
+                    archived, source, thread_source, agent_nickname, agent_role, agent_path
              FROM threads WHERE ' . $where . ' ORDER BY updated_at_ms DESC LIMIT 1000'
         );
         $statement->bindValue(':updated_since', $updatedSinceMs, SQLITE3_INTEGER);
@@ -156,5 +178,24 @@ final class CodexLocalStore
             'created_at_ms' => (int) ($row['created_at_ms'] ?? 0),
             'archived' => (bool) ($row['archived'] ?? false),
         ];
+    }
+
+    private function classifyRow(array $row): string
+    {
+        if ((bool) ($row['archived'] ?? false)) {
+            return 'ARCHIVED';
+        }
+
+        if (($row['thread_source'] ?? null) === 'user') {
+            return 'USER';
+        }
+
+        if (($row['thread_source'] ?? null) === 'subagent'
+            || ($row['agent_path'] ?? null) !== null
+            || str_contains((string) ($row['source'] ?? ''), '"subagent"')) {
+            return 'INTERNAL';
+        }
+
+        return 'UNKNOWN';
     }
 }

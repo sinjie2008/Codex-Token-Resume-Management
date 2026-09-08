@@ -67,8 +67,8 @@ file_put_contents($messageOnlyRolloutPath, json_encode([
 ], JSON_UNESCAPED_SLASHES) . "\n");
 
 $state = new SQLite3($statePath);
-$state->exec('CREATE TABLE threads (id TEXT, rollout_path TEXT, cwd TEXT, title TEXT, name TEXT, updated_at_ms INTEGER, created_at_ms INTEGER, archived INTEGER)');
-$statement = $state->prepare('INSERT INTO threads VALUES (:id, :rollout, :cwd, :title, :name, :updated, :created, 0)');
+$state->exec('CREATE TABLE threads (id TEXT, rollout_path TEXT, cwd TEXT, title TEXT, name TEXT, updated_at_ms INTEGER, created_at_ms INTEGER, archived INTEGER, source TEXT, thread_source TEXT, agent_nickname TEXT, agent_role TEXT, agent_path TEXT)');
+$statement = $state->prepare('INSERT INTO threads VALUES (:id, :rollout, :cwd, :title, :name, :updated, :created, 0, "vscode", "user", NULL, NULL, NULL)');
 $statement->bindValue(':id', $sessionId);
 $statement->bindValue(':rollout', $rolloutPath);
 $statement->bindValue(':cwd', 'C:\\workspace');
@@ -76,6 +76,15 @@ $statement->bindValue(':title', 'Fallback title');
 $statement->bindValue(':name', 'Fixture session');
 $statement->bindValue(':updated', 1788399999000, SQLITE3_INTEGER);
 $statement->bindValue(':created', 1788399000000, SQLITE3_INTEGER);
+$statement->execute();
+$internalSessionId = '00000000-0000-4000-8000-000000000002';
+$statement = $state->prepare('INSERT INTO threads VALUES (:id, :rollout, :cwd, "", NULL, :updated, :created, 0, :source, "subagent", "Luna", "worker", "/root/luna")');
+$statement->bindValue(':id', $internalSessionId);
+$statement->bindValue(':rollout', $rolloutPath);
+$statement->bindValue(':cwd', 'C:\\workspace');
+$statement->bindValue(':updated', 1788399998000, SQLITE3_INTEGER);
+$statement->bindValue(':created', 1788399001000, SQLITE3_INTEGER);
+$statement->bindValue(':source', '{"subagent":{"thread_spawn":{"parent_thread_id":"' . $sessionId . '"}}}');
 $statement->execute();
 $state->close();
 
@@ -123,6 +132,10 @@ try {
     $store = new CodexLocalStore($config);
     $thread = $store->findThread($sessionId);
     $assert($thread !== null && $thread['codex_title'] === 'Fixture session', 'Codex title must prefer the stored name.');
+    $assert($store->findThread($internalSessionId) === null, 'A subagent thread must not be available for Add Session or resume.');
+    $assert($store->classifyThread($internalSessionId) === 'INTERNAL', 'A subagent thread must be structurally classified as internal.');
+    $recentThreads = $store->listRecentThreads(0);
+    $assert(array_column($recentThreads, 'session_id') === [$sessionId], 'Discovery must return only top-level user threads.');
     $assert($store->hasActiveWriter($sessionId), 'In-progress turn plus writer lock must block resume.');
 
     $active = CodexRunner::classify(1, '', 'thread already has an active or pending turn');
